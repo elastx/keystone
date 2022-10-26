@@ -713,6 +713,26 @@ class RuleProcessor(object):
             if isinstance(v, dict):
                 new_value = self._update_local_mapping(v, direct_maps)
             elif isinstance(v, list):
+                # Naive implementation of expanding ";" separated projects
+                # and "," separated roles for each project
+                # This code looks identical up until Zed
+                # Should be replaced by something explicitly supported by the
+                # JSONSchema
+                if k == 'projects':
+                    for project in v:
+                        try:
+                            # Consider json.loads instead
+                            project_list = ast.literal_eval(project['name'].format(*direct_maps))
+                            if isinstance(project_list, list):
+                                for p in project_list:
+                                    name, *roles = p.split(',')
+                                    expanded_roles = []
+                                    for role in roles:
+                                        expanded_roles.append({'name': role})
+                                    v.append({'name': name, 'roles': expanded_roles})
+                                v.remove(project)
+                        except ValueError as e:
+                            pass
                 new_value = [self._update_local_mapping(item, direct_maps)
                              for item in v]
             else:
