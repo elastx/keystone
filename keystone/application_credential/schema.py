@@ -42,7 +42,7 @@ _access_rules_properties = {
             },
             'method': {
                 'type': 'string',
-                'pattern': r'^(POST|GET|HEAD|PATCH|PUT|DELETE)$'
+                'pattern': r'^(POST|GET|HEAD|PATCH|PUT|DELETE|COPY)$'
             },
             'service': parameter_types.id_string,
             'id': parameter_types.id_string,
