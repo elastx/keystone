@@ -860,9 +860,11 @@ class TestCredentialAppCreds(CredentialBaseTestCase):
 
         Call ``POST /credentials``.
         """
-        # Create the app cred
+        # Create an unrestricted app cred (restricted app creds are
+        # blocked from creating EC2 credentials)
         ref = unit.new_application_credential_ref(roles=[{'id': self.role_id}])
         del ref['id']
+        ref['unrestricted'] = True
         r = self.post('/users/%s/application_credentials' % self.user_id,
                       body={'application_credential': ref})
         app_cred = r.result['application_credential']
@@ -982,7 +984,6 @@ class TestCredentialAppCreds(CredentialBaseTestCase):
         r = self.post('/credentials', body={'credential': totp_ref})
         totp_id = r.result['credential']['id']
         app_cred_token = self._get_app_cred_token(unrestricted=True)
-
         self.patch(
             f'/credentials/{totp_id}',
             token=app_cred_token,
@@ -1007,6 +1008,24 @@ class TestCredentialAppCreds(CredentialBaseTestCase):
             expected_status=http.client.FORBIDDEN,
         )
 
+
+    def test_restricted_app_cred_cannot_create_ec2_credential(self):
+        """Test that a restricted app cred cannot create EC2 credentials.
+
+        A restricted application credential must not be allowed to
+        create EC2 credentials via POST /credentials either, as this
+        would bypass the guard on the OS-EC2 endpoint.
+        """
+        token_id = self._get_app_cred_token(unrestricted=False)
+        blob, ref = unit.new_ec2_credential(
+            user_id=self.user_id, project_id=self.project_id
+        )
+        self.post(
+            '/credentials',
+            body={'credential': ref},
+            token=token_id,
+            expected_status=http.client.FORBIDDEN,
+        )
 
 class TestCredentialAccessToken(CredentialBaseTestCase):
     """Test credential with access token."""
