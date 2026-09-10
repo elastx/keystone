@@ -16,9 +16,15 @@ package.
 
 """
 
-
-_DEFAULT_AUTH_METHODS = ['external', 'password', 'token', 'oauth1', 'mapped',
-                         'application_credential']
+_DEFAULT_AUTH_METHODS = [
+    'external',
+    'password',
+    'token',
+    'oauth1',
+    'mapped',
+    'application_credential',
+    'ec2credential',
+]
 
 _CERTFILE = '/etc/keystone/ssl/certs/signing_cert.pem'
 _KEYFILE = '/etc/keystone/ssl/private/signing_key.pem'
