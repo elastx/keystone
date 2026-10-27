@@ -440,6 +440,16 @@ class AuthContextMiddleware(provider_api.ProviderAPIMixin,
                 'token': self.token
             }
             auth_context.update(additional)
+            if (
+                CONF.auth.ban_ec2credential_tokens
+                and 'ec2credential' in self.token.methods
+            ):
+                raise exception.Forbidden(
+                    _(
+                        'EC2 credential tokens cannot be used for '
+                        'authorization.'
+                    )
+                )
 
         elif self._validate_trusted_issuer(request):
             auth_context = self._build_tokenless_auth_context(request)
