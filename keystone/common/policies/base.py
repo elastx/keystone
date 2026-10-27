@@ -59,6 +59,12 @@ SYSTEM_ADMIN_OR_CRED_OWNER = (
     '(' + SYSTEM_ADMIN + ') '
     'or user_id:%(target.credential.user_id)s'
 )
+# Yoga's new defaults use system-scoped admin; upstream's 2024.1 rule uses
+# admin_required, which would widen the new default to any project admin
+ADMIN_OR_MEMBER_AND_CRED_OWNER = (
+    '(' + SYSTEM_ADMIN + ') or '
+    '(role:member and user_id:%(target.credential.user_id)s)'
+)
 
 rules = [
     policy.RuleDefault(
