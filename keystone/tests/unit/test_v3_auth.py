@@ -2770,6 +2770,24 @@ class AllowRescopeScopedTokenDisabledTests(test_v3.RestfulTestCase):
                 project_id=self.project_id),
             expected_status=http.client.FORBIDDEN)
 
+    def test_rescoped_system_token_disabled(self):
+        PROVIDERS.assignment_api.create_system_grant_for_user(
+            self.user['id'], self.role['id']
+        )
+        system_token = self.get_requested_token(
+            self.build_authentication_request(
+                user_id=self.user['id'],
+                password=self.user['password'],
+                system=True,
+            )
+        )
+        # A system-scoped token should not be usable to create any new
+        # token when allow_rescope_scoped_token is disabled.
+        self.v3_create_token(
+            self.build_authentication_request(token=system_token),
+            expected_status=http.client.FORBIDDEN,
+        )
+
 
 class TestFernetTokenAPIs(test_v3.RestfulTestCase, TokenAPITests,
                           TokenDataTests):
@@ -5697,6 +5715,36 @@ class ApplicationCredentialAuth(test_v3.RestfulTestCase):
             project_id=new_project['id'])
         self.v3_create_token(app_cred_auth,
                              expected_status=http.client.UNAUTHORIZED)
+
+    def test_application_credential_token_rescoped_to_system_fails(self):
+        # A token issued via application credential should not be rescoped
+        # to system scope, even if the user has system role assignments.
+        # Application credentials are intentionally bound to a specific
+        # project and role set. Allowing rescoping to system scope would
+        # defeat that constraint.
+        app_cred = self._make_app_cred()
+        app_cred_ref = self.app_cred_api.create_application_credential(
+            app_cred
+        )
+        # Give the user a system role assignment
+        PROVIDERS.assignment_api.create_system_grant_for_user(
+            self.user['id'], self.role_id
+        )
+        # Get an app credential token (project-scoped)
+        auth_data = self.build_authentication_request(
+            app_cred_id=app_cred_ref['id'], secret=app_cred_ref['secret']
+        )
+        resp = self.v3_create_token(
+            auth_data, expected_status=http.client.CREATED
+        )
+        app_cred_token = resp.headers.get('X-Subject-Token')
+        # Attempt to rescope that token to system scope
+        rescope_auth = self.build_authentication_request(
+            token=app_cred_token, system=True
+        )
+        self.v3_create_token(
+            rescope_auth, expected_status=http.client.FORBIDDEN
+        )
 
     def test_application_credential_with_access_rules(self):
         access_rules = [
