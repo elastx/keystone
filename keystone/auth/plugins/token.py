@@ -12,6 +12,9 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+# dict[...] annotations must stay unevaluated: imports on py3.8
+from __future__ import annotations
+
 import flask
 from oslo_log import log
 import typing as ty
