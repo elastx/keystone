@@ -860,9 +860,11 @@ class TestCredentialAppCreds(CredentialBaseTestCase):
 
         Call ``POST /credentials``.
         """
-        # Create the app cred
+        # Create an unrestricted app cred (restricted app creds are
+        # blocked from creating EC2 credentials)
         ref = unit.new_application_credential_ref(roles=[{'id': self.role_id}])
         del ref['id']
+        ref['unrestricted'] = True
         r = self.post('/users/%s/application_credentials' % self.user_id,
                       body={'application_credential': ref})
         app_cred = r.result['application_credential']
@@ -982,7 +984,6 @@ class TestCredentialAppCreds(CredentialBaseTestCase):
         r = self.post('/credentials', body={'credential': totp_ref})
         totp_id = r.result['credential']['id']
         app_cred_token = self._get_app_cred_token(unrestricted=True)
-
         self.patch(
             f'/credentials/{totp_id}',
             token=app_cred_token,
@@ -1005,6 +1006,117 @@ class TestCredentialAppCreds(CredentialBaseTestCase):
             f'/credentials/{totp_id}',
             token=app_cred_token,
             expected_status=http.client.FORBIDDEN,
+        )
+
+
+    def test_restricted_app_cred_cannot_create_ec2_credential(self):
+        """Test that a restricted app cred cannot create EC2 credentials.
+
+        A restricted application credential must not be allowed to
+        create EC2 credentials via POST /credentials either, as this
+        would bypass the guard on the OS-EC2 endpoint.
+        """
+        token_id = self._get_app_cred_token(unrestricted=False)
+        blob, ref = unit.new_ec2_credential(
+            user_id=self.user_id, project_id=self.project_id
+        )
+        self.post(
+            '/credentials',
+            body={'credential': ref},
+            token=token_id,
+            expected_status=http.client.FORBIDDEN,
+        )
+
+    def test_app_cred_ec2_credential_cross_project_forbidden(self):
+        """EC2 credential project_id must match the app cred project.
+
+        An unrestricted app cred scoped to project A must not be used to
+        create an EC2 credential targeting a different project B.
+
+        Call ``POST /credentials``.
+        """
+        token_id = self._get_app_cred_token(unrestricted=True)
+
+        other_project = unit.new_project_ref(domain_id=self.domain_id)
+        PROVIDERS.resource_api.create_project(
+            other_project['id'], other_project
+        )
+
+        _, ec2_ref = unit.new_ec2_credential(
+            user_id=self.user_id, project_id=other_project['id']
+        )
+        self.post(
+            '/credentials',
+            body={'credential': ec2_ref},
+            token=token_id,
+            expected_status=http.client.FORBIDDEN,
+        )
+
+    def test_app_cred_ec2_auth_cross_project_rejected(self):
+        """EC2 auth is rejected when credential project differs from app cred.
+
+        A pre-existing EC2 credential whose project_id does not match the
+        linked application credential's project must be rejected at
+        authentication time, preventing cross-project lateral movement.
+
+        Call ``POST /ec2tokens``.
+        """
+        ref = unit.new_application_credential_ref(roles=[{'id': self.role_id}])
+        del ref['id']
+        r = self.post(
+            f'/users/{self.user_id}/application_credentials',
+            body={'application_credential': ref},
+        )
+        app_cred = r.result['application_credential']
+
+        other_project = unit.new_project_ref(domain_id=self.domain_id)
+        PROVIDERS.resource_api.create_project(
+            other_project['id'], other_project
+        )
+
+        # Bypass the API to plant a credential with a mismatched project_id.
+        # This simulates a credential that existed before the creation-time
+        # check was added, or one created via a direct DB write.
+        blob = {
+            'access': uuid.uuid4().hex,
+            'secret': uuid.uuid4().hex,
+            'trust_id': None,
+            'app_cred_id': app_cred['id'],
+        }
+        _, ec2_ref = unit.new_ec2_credential(
+            user_id=self.user_id, project_id=other_project['id'], blob=blob
+        )
+        PROVIDERS.credential_api.create_credential(ec2_ref['id'], ec2_ref)
+
+        signer = ec2_utils.Ec2Signer(blob['secret'])
+        params = {
+            'SignatureMethod': 'HmacSHA256',
+            'SignatureVersion': '2',
+            'AWSAccessKeyId': blob['access'],
+        }
+        request = {
+            'host': 'foo',
+            'verb': 'GET',
+            'path': '/bar',
+            'params': params,
+        }
+        sig_ref = {
+            'access': blob['access'],
+            'signature': signer.generate(request),
+            'host': 'foo',
+            'verb': 'GET',
+            'path': '/bar',
+            'params': params,
+        }
+        PROVIDERS.assignment_api.create_system_grant_for_user(
+            self.user_id, self.role_id
+        )
+        token = self.get_system_scoped_token()
+        self.post(
+            '/ec2tokens',
+            body={'ec2Credentials': sig_ref},
+            token=token,
+            expected_status=http.client.UNAUTHORIZED,
         )
 
 
@@ -1298,6 +1410,53 @@ class TestCredentialEc2(CredentialBaseTestCase):
         self.assertRaises(exception.CredentialNotFound,
                           PROVIDERS.credential_api.get_credential,
                           cred_from_credential_api[0]['id'])
+
+    def _get_app_cred_token(self, unrestricted=False):
+        """Create an application credential and return a token for it."""
+        ref = unit.new_application_credential_ref(roles=[{'id': self.role_id}])
+        del ref['id']
+        if unrestricted:
+            ref['unrestricted'] = True
+        r = self.post(
+            f'/users/{self.user_id}/application_credentials',
+            body={'application_credential': ref},
+        )
+        app_cred = r.result['application_credential']
+        auth_data = self.build_authentication_request(
+            app_cred_id=app_cred['id'], secret=app_cred['secret']
+        )
+        r = self.v3_create_token(auth_data)
+        return r.headers.get('X-Subject-Token')
+
+    def test_ec2_create_credential_with_restricted_app_cred(self):
+        """Test that a restricted app cred cannot create EC2 credentials.
+
+        A restricted application credential must not be allowed to create
+        EC2 credentials, as this would bypass the role restriction and
+        grant full user access to S3.
+        """
+        token_id = self._get_app_cred_token(unrestricted=False)
+        uri = self._get_ec2_cred_uri()
+        self.post(
+            uri,
+            body={'tenant_id': self.project_id},
+            token=token_id,
+            expected_status=http.client.FORBIDDEN,
+        )
+
+    def test_ec2_create_credential_with_unrestricted_app_cred(self):
+        """Test that an unrestricted app cred can create EC2 credentials."""
+        token_id = self._get_app_cred_token(unrestricted=True)
+        uri = self._get_ec2_cred_uri()
+        r = self.post(
+            uri,
+            body={'tenant_id': self.project_id},
+            token=token_id,
+            expected_status=http.client.CREATED,
+        )
+        ec2_cred = r.result['credential']
+        self.assertEqual(self.user_id, ec2_cred['user_id'])
+        self.assertEqual(self.project_id, ec2_cred['tenant_id'])
 
     def _get_trust_token(self):
         """Create a trust and return a trust-scoped token for the trustee."""

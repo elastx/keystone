@@ -75,6 +75,16 @@ def _check_credential_project_scope(token, oslo_context, credential):
         )
 
 
+def _check_unrestricted_application_credential(token):
+    if 'application_credential' in token.methods:
+        if not token.application_credential['unrestricted']:
+            action = _(
+                "Using method 'application_credential' is not "
+                "allowed for managing additional credentials."
+            )
+            raise exception.ForbiddenAction(action=action)
+
+
 def _build_target_enforcement():
     target = {}
     try:
@@ -205,14 +215,26 @@ class CredentialResource(ks_flask.ResourceBase):
             action='identity:create_credential', target_attr=target
         )
         validation.lazy_validate(schema.credential_create, credential)
+        token = self.auth_context['token']
+        if credential.get('type', '').lower() == 'ec2':
+            _check_unrestricted_application_credential(token)
         trust_id = getattr(self.oslo_context, 'trust_id', None)
-        app_cred_id = getattr(
-            self.auth_context['token'], 'application_credential_id', None)
-        access_token_id = getattr(
-            self.auth_context['token'], 'access_token_id', None)
-        _check_credential_project_scope(
-            self.auth_context['token'], self.oslo_context, credential
-        )
+        app_cred_id = getattr(token, 'application_credential_id', None)
+        access_token_id = getattr(token, 'access_token_id', None)
+        _check_credential_project_scope(token, self.oslo_context, credential)
+        if (
+            app_cred_id is not None
+            and credential.get('type', '').lower() == 'ec2'
+        ):
+            ac_api = PROVIDERS.application_credential_api
+            app_cred = ac_api.get_application_credential(app_cred_id)
+            if credential.get('project_id') != app_cred['project_id']:
+                action = _(
+                    'EC2 credential project_id must match the '
+                    'project of the application credential used '
+                    'to authenticate'
+                )
+                raise exception.ForbiddenAction(action=action)
         ref = self._assign_unique_id(
             self._normalize_dict(credential),
             trust_id=trust_id, app_cred_id=app_cred_id,
